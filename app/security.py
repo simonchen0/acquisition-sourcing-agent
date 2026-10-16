@@ -1,25 +1,6 @@
-import base64
-import hashlib
-import hmac
-import secrets
 from urllib.parse import urlsplit
 from . import config
 from cryptography.fernet import Fernet
-
-
-def hash_password(password):
-    if len(password) < 12 or len(password) > 1024:
-        raise ValueError('Use a password of 12–1024 characters.')
-    salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 600000)
-    return base64.b64encode(salt + digest).decode()
-
-
-def verify_password(password, stored):
-    try:
-        raw = base64.b64decode(stored)
-        return hmac.compare_digest(raw[16:], hashlib.pbkdf2_hmac('sha256', password.encode(), raw[:16], 600000))
-    except (ValueError, TypeError): return False
 
 
 def safe_public_url(url):

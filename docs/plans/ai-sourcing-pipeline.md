@@ -23,6 +23,8 @@ Today's discovery (`app/discovery.py`) runs templated Brave queries and regex-pa
 **Criteria → Apollo company search → Apollo enrichment (top candidates) → Apollo owner lookup → Screen & rank → Export**, plus **Brave** for brokered listings in parallel (existing code).
 
 ### 0. Make it runnable first (small; do before anything else)
+> **Done (2026-10-16):** the app is now local-only with no sign-in. Run `python -m app`; the worker runs in-process and `.env` loads automatically. Docker, Postgres, dev scripts, `app.cli`, and `dist/` were removed, so the items below are superseded.
+
 - **Fix the macOS dev scripts.** `scripts/dev-start.sh` and `dev-stop.sh` use `/proc/<pid>` and `rg`, which are Linux-only. They falsely report "Web startup failed" and never start the worker. Replace them with `ps -p <pid> -o command=` + `grep`.
 - **Run as one process.** Start the worker as a background thread in a FastAPI lifespan handler in `app/main.py`. Keep `python -m app.worker` working for production/Compose.
 - **Load `.env` automatically** in `app/config.py` (add `python-dotenv`). Add `APOLLO_API_KEY` and `APOLLO_CREDIT_COST_USD` to `.env.example`.

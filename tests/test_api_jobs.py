@@ -7,23 +7,25 @@ from app.db import Session,User,Job,Target,Opportunity,Document,Evaluation,Usage
 from app.criteria import Criteria
 from app.jobs import enqueue,tick
 from app.evaluation import FRAMEWORKS
-from app.security import hash_password
 from app.discovery import normalize
 
 def save_criteria(client):return client.post('/api/criteria',json=Criteria().model_dump()).json()['id']
 def standalone(client,name='Example opportunity'):
     response=client.post('/api/opportunities',json={'name':name,'category':'proprietary'});assert response.status_code==200;return response.json()['id']
 
-def test_authentication_csrf_and_pages(client):
+def test_no_sign_in_but_csrf_and_local_host_enforced(client):
     for p in ['/','/find','/deals/brokered','/deals/proprietary','/evaluate','/saved','/settings']:
         r=client.get(p);assert r.status_code==200 and "script-src 'self'" in r.headers['content-security-policy']
     csrf=client.headers.pop('X-CSRF-Token');assert client.post('/api/criteria',json=Criteria().model_dump()).status_code==403
     client.headers['X-CSRF-Token']=csrf;assert client.get('/health').json()['database']=='connected'
+    assert client.get('/login').status_code==404
+    assert client.get('/api/bootstrap',headers={'Host':'evil.example'}).status_code==403
+    assert client.get('/api/bootstrap').json()['settings']['search_budget']==10
 
 def test_save_reload_and_tenant_isolation(client,user):
     cid=save_criteria(client);assert client.get('/api/bootstrap').json()['criteria'][0]['id']==cid
     with Session() as db:
-        other=User(email='other@example.com',password=hash_password('other-password-123'));db.add(other);db.flush()
+        other=User(email='other@example.com');db.add(other);db.flush()
         o=Opportunity(user_id=other.id,name='Private deal',category='brokered');db.add(o);db.commit();oid=o.id
     assert client.get('/api/opportunities/'+str(oid)).status_code==404
     assert client.put('/api/opportunities/'+str(oid),json={'notes':'Intrusion'}).status_code==404
@@ -141,12 +143,22 @@ def test_settings_custom_presets_and_invalid_weights(client):
     assert client.get('/api/bootstrap').json()['settings']['presets']['strategy']['weights']['valuation']==20
 
 
-def test_login_nonce_survives_favicon_and_parallel_login_page(user):
-    import re
-    from fastapi.testclient import TestClient
-    from app.main import app
-    with TestClient(app) as c:
-        page=c.get('/login');nonce=re.search(r'name="nonce" value="([^"]+)"',page.text)[1]
-        assert c.get('/favicon.ico').status_code==204
-        c.get('/login')
-        assert c.post('/login',data={'email':user.email,'password':'test-password-123','nonce':nonce}).status_code==200
+def test_env_file_loaded_without_overriding_environment(tmp_path,monkeypatch):
+    from dotenv import load_dotenv
+    import os
+    (tmp_path/'.env').write_text('ASA_TEST_FROM_FILE=file\nASA_TEST_PRESET=file\n')
+    monkeypatch.setenv('ASA_TEST_PRESET','shell')
+    load_dotenv(tmp_path/'.env',override=False)
+    assert os.environ.pop('ASA_TEST_FROM_FILE')=='file' and os.environ['ASA_TEST_PRESET']=='shell'
+
+def test_embedded_worker_thread_processes_jobs(user,monkeypatch):
+    import threading
+    from app.jobs import work
+    calls=[]
+    def fake_tick():
+        calls.append(1)
+        if len(calls)>=3: stop.set()
+        return True
+    monkeypatch.setattr('app.jobs.tick',fake_tick)
+    stop=threading.Event();t=threading.Thread(target=work,args=(stop,));t.start();t.join(5)
+    assert not t.is_alive() and len(calls)>=3

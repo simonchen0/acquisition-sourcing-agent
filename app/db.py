@@ -1,5 +1,5 @@
 import time
-from sqlalchemy import create_engine, event, ForeignKey, String, Text, JSON, Float, Integer, Boolean, UniqueConstraint
+from sqlalchemy import select, create_engine, event, ForeignKey, String, Text, JSON, Float, Integer, Boolean, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from . import config
 
@@ -18,17 +18,10 @@ class User(Base):
     __tablename__ = 'users'
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(254), unique=True)
-    password: Mapped[str] = mapped_column(Text)
+    password: Mapped[str] = mapped_column(Text, default='')
     settings: Mapped[dict] = mapped_column(JSON, default=dict)
     month: Mapped[str] = mapped_column(String(7), default='')
     spend: Mapped[float] = mapped_column(Float, default=0)
-
-class LoginSession(Base):
-    __tablename__ = 'login_sessions'
-    token: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'))
-    csrf: Mapped[str] = mapped_column(String(64))
-    expires: Mapped[float] = mapped_column(Float)
 
 class CriteriaRecord(Base):
     __tablename__ = 'criteria'
@@ -117,8 +110,9 @@ class Cache(Base):
 
 def init_db(): Base.metadata.create_all(engine)
 
-class LoginAttempt(Base):
-    __tablename__ = 'login_attempts'
-    key: Mapped[str] = mapped_column(String(64),primary_key=True)
-    count: Mapped[int] = mapped_column(default=0)
-    window: Mapped[float] = mapped_column(Float,default=time.time)
+def local_user(db):
+    """Single local operator; no sign-in. Reuses the first account from older databases."""
+    user = db.scalar(select(User).order_by(User.id).limit(1))
+    if not user:
+        user = User(email='local', settings=dict(config.DEFAULT_SETTINGS)); db.add(user); db.commit()
+    return user

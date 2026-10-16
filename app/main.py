@@ -1,24 +1,23 @@
 import csv
-import hashlib
 import io
 import json
 import math
 import secrets
-import time
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException, Depends, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, Response, JSONResponse
+from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select, func, delete
 from sqlalchemy.orm import Session as DBSession
 from . import config
-from .db import init_db, Session, User, LoginSession, CriteriaRecord, Job, Target, Opportunity, Document, Evaluation, Usage, LoginAttempt, Cache
-from .security import hash_password, verify_password, safe_public_url
+from .db import init_db, local_user, Session, User, CriteriaRecord, Job, Target, Opportunity, Document, Evaluation, Usage
+from .security import safe_public_url
 from .criteria import Criteria, CHARACTERISTICS, screen
-from .jobs import enqueue, ACTIVE, month
+from .jobs import enqueue, ACTIVE, month, work
 from .discovery import queries, canonical_url
 from .documents import store, read_document, extract
 from .evaluation import FRAMEWORKS, FinancialDatum, weights_valid
@@ -27,11 +26,20 @@ from .exports import export_targets, evaluation_markdown
 @asynccontextmanager
 async def lifespan(app):
     init_db()
+    stop=threading.Event(); worker=None
+    if config.EMBEDDED_WORKER:
+        worker=threading.Thread(target=work,args=(stop,),name='job-worker',daemon=True); worker.start()
     yield
+    stop.set()
+    if worker: worker.join(timeout=10)
 
 app=FastAPI(title='Acquisition Sourcing Agent',lifespan=lifespan,docs_url=None,redoc_url=None)
 app.mount('/static',StaticFiles(directory=config.ROOT/'app/static'),name='static')
 templates=Jinja2Templates(directory=config.ROOT/'app/templates')
+# No sign-in: the app binds to loopback. A per-process token on state-changing calls plus a
+# Host check stop other websites (or DNS rebinding) from driving paid API calls.
+CSRF=secrets.token_urlsafe(32)
+LOCAL_HOSTS={'127.0.0.1','localhost','[::1]','testserver'}
 
 def session_db():
     with Session() as db: yield db
@@ -50,17 +58,10 @@ def public_job(job):
 async def controls(request,call_next):
     length=request.headers.get('content-length')
     if length and (not length.isdigit() or int(length)>11*1024*1024): return JSONResponse({'detail':'Request exceeds 11 MB limit; upload documents individually.'},413)
-    public=request.url.path in ['/login','/health','/favicon.ico'] or request.url.path.startswith('/static/')
-    if not public:
-        token=request.cookies.get('session','')
-        with Session() as db:
-            login=db.get(LoginSession,hashlib.sha256(token.encode()).hexdigest()) if token else None
-            if not login or login.expires<time.time():
-                return JSONResponse({'detail':'Please sign in.'},401) if request.url.path.startswith('/api/') else RedirectResponse('/login',303)
-            user=db.get(User,login.user_id)
-            if not user: return JSONResponse({'detail':'Please sign in.'},401)
-            request.state.user=user; request.state.csrf=login.csrf
-            if request.method not in ['GET','HEAD','OPTIONS'] and not secrets.compare_digest(request.headers.get('X-CSRF-Token',''),login.csrf): return JSONResponse({'detail':'Invalid request token. Reload the page.'},403)
+    if (request.headers.get('host','').rsplit(':',1)[0] or '').lower() not in LOCAL_HOSTS: return JSONResponse({'detail':'Local access only.'},403)
+    if request.method not in ['GET','HEAD','OPTIONS'] and not secrets.compare_digest(request.headers.get('X-CSRF-Token',''),CSRF): return JSONResponse({'detail':'Invalid request token. Reload the page.'},403)
+    if not (request.url.path in ['/health','/favicon.ico'] or request.url.path.startswith('/static/')):
+        with Session() as db: request.state.user=local_user(db)
     response=await call_next(request)
     response.headers['X-Content-Type-Options']='nosniff'
     response.headers['X-Frame-Options']='DENY'
@@ -76,39 +77,6 @@ def favicon(): return Response(status_code=204)
 def health(db:DBSession=Depends(session_db)):
     db.execute(select(1)); return {'status':'ok','database':'connected'}
 
-@app.get('/login',response_class=HTMLResponse)
-def login_page(request:Request):
-    token=request.cookies.get('login_nonce') or secrets.token_urlsafe(32)
-    r=templates.TemplateResponse(request=request,name='login.html',context={'token':token,'error':None})
-    r.set_cookie('login_nonce',token,httponly=True,secure=config.COOKIE_SECURE,samesite='strict',max_age=600)
-    return r
-
-@app.post('/login')
-def login(request:Request,email:str=Form(...),password:str=Form(...),nonce:str=Form(...),db:DBSession=Depends(session_db)):
-    if not secrets.compare_digest(nonce,request.cookies.get('login_nonce','')): raise HTTPException(403,'Reload the sign-in page.')
-    if len(email)>254 or len(password)>1024: raise HTTPException(400,'Invalid sign-in data.')
-    email=email.strip().lower()
-    for value in ['ip:'+str(request.client.host if request.client else ''),'account:'+email]:
-        key=hashlib.sha256(value.encode()).hexdigest(); attempt=db.get(LoginAttempt,key)
-        if attempt and time.time()-attempt.window<300 and attempt.count>=10: raise HTTPException(429,'Too many sign-in attempts. Try again in five minutes.')
-        if not attempt: attempt=LoginAttempt(key=key,count=0); db.add(attempt)
-        elif time.time()-attempt.window>=300: attempt.count=0; attempt.window=time.time()
-        attempt.count+=1
-    db.commit()
-    user=db.scalar(select(User).where(User.email==email))
-    dummy='AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
-    valid=verify_password(password,user.password if user else dummy)
-    if not user or not valid:
-        return templates.TemplateResponse(request=request,name='login.html',context={'token':nonce,'error':'Email or password is incorrect.'},status_code=401)
-    raw=secrets.token_urlsafe(48)
-    db.add(LoginSession(token=hashlib.sha256(raw.encode()).hexdigest(),user_id=user.id,csrf=secrets.token_urlsafe(32),expires=time.time()+43200)); db.commit()
-    r=RedirectResponse('/',303); r.set_cookie('session',raw,httponly=True,secure=config.COOKIE_SECURE,samesite='strict',max_age=43200); r.delete_cookie('login_nonce'); return r
-
-@app.post('/api/logout')
-def logout(request:Request,db:DBSession=Depends(session_db)):
-    db.execute(delete(LoginSession).where(LoginSession.token==hashlib.sha256(request.cookies['session'].encode()).hexdigest())); db.commit()
-    r=JSONResponse({'ok':True}); r.delete_cookie('session'); return r
-
 @app.get('/',response_class=HTMLResponse)
 @app.get('/find',response_class=HTMLResponse)
 @app.get('/deals/{category}',response_class=HTMLResponse)
@@ -118,12 +86,12 @@ def logout(request:Request,db:DBSession=Depends(session_db)):
 @app.get('/saved',response_class=HTMLResponse)
 @app.get('/settings',response_class=HTMLResponse)
 def page(request:Request):
-    return templates.TemplateResponse(request=request,name='app.html',context={'csrf':request.state.csrf,'email':request.state.user.email})
+    return templates.TemplateResponse(request=request,name='app.html',context={'csrf':CSRF})
 
 @app.get('/api/bootstrap')
 def bootstrap(request:Request,db:DBSession=Depends(session_db)):
     return {'characteristics':CHARACTERISTICS,'frameworks':FRAMEWORKS,'criteria':[{'id':c.id,'name':c.name,'data':c.data} for c in db.scalars(select(CriteriaRecord).where(CriteriaRecord.user_id==uid(request)))],
-            'settings':request.state.user.settings,'providers':{'brave':bool(config.BRAVE_KEY) and config.BRAVE_STORAGE_RIGHTS,'openai':bool(config.AI_KEY)},
+            'settings':{**config.DEFAULT_SETTINGS,**request.state.user.settings},'providers':{'brave':bool(config.BRAVE_KEY) and config.BRAVE_STORAGE_RIGHTS,'openai':bool(config.AI_KEY)},
             'pricing':{'brave_request':config.BRAVE_REQUEST_COST,'ai_input_million':config.AI_INPUT_COST,'ai_output_million':config.AI_OUTPUT_COST,'model':config.AI_MODEL},
             'month_spend':request.state.user.spend if request.state.user.month==month() else 0}
 
@@ -148,7 +116,7 @@ def search_estimate(c:Criteria,request:Request):
 @app.post('/api/search')
 def start_search(body:SearchInput,request:Request,db:DBSession=Depends(session_db)):
     if not config.BRAVE_KEY or not config.BRAVE_STORAGE_RIGHTS: raise HTTPException(409,'Automatic discovery needs BRAVE_SEARCH_API_KEY and confirmation that your plan permits storage (BRAVE_STORAGE_RIGHTS_CONFIRMED=true). No paid request was made.')
-    limit=float(request.state.user.settings.get('search_budget',1))
+    limit=float(request.state.user.settings.get('search_budget',config.DEFAULT_SETTINGS['search_budget']))
     if body.budget>limit: raise HTTPException(400,'Budget exceeds your per-search limit. Adjust Settings first.')
     job=enqueue(db,request.state.user,'sourcing',{'criteria':body.criteria.model_dump()},body.idempotency_key,body.budget)
     return public_job(job)
@@ -308,7 +276,7 @@ class EvalInput(BaseModel):
 @app.post('/api/opportunities/{oid}/evaluate')
 def evaluate(oid:int,body:EvalInput,request:Request,db:DBSession=Depends(session_db)):
     o=owned(db,Opportunity,oid,uid(request))
-    if not config.AI_KEY: raise HTTPException(409,'AI evaluation requires AI_API_KEY in server settings. No AI request was made.')
+    if not config.AI_KEY: raise HTTPException(409,'AI evaluation requires OPENAI_API_KEY in .env. No AI request was made.')
     if body.budget>float(request.state.user.settings.get('evaluation_budget',0.25)): raise HTTPException(400,'Evaluation budget exceeds your configured limit.')
     try: weights=weights_valid(o.category,body.weights or request.state.user.settings.get('frameworks',{}).get(o.category,FRAMEWORKS[o.category]))
     except ValueError as e: raise HTTPException(400,str(e))
@@ -337,8 +305,8 @@ def delete_opportunity(oid:int,request:Request,db:DBSession=Depends(session_db))
     db.delete(o); db.commit(); return {'ok':True}
 
 class SettingsInput(BaseModel):
-    monthly_budget:float=Field(20,ge=0,le=10000,allow_inf_nan=False)
-    search_budget:float=Field(1,ge=0,le=100,allow_inf_nan=False)
+    monthly_budget:float=Field(100,ge=0,le=10000,allow_inf_nan=False)
+    search_budget:float=Field(10,ge=0,le=100,allow_inf_nan=False)
     evaluation_budget:float=Field(.25,ge=0,le=100,allow_inf_nan=False)
     frameworks:dict=Field(default_factory=dict)
     presets:dict=Field(default_factory=dict)

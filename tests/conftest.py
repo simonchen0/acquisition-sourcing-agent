@@ -6,13 +6,15 @@ test_url=os.environ.get('TEST_DATABASE_URL')
 if test_url and not (make_url(test_url).database or '').endswith(('_test','_tests')):
     raise RuntimeError('TEST_DATABASE_URL must name a dedicated database ending in _test or _tests. Tests recreate its tables.')
 os.environ['DATABASE_URL']=test_url or 'sqlite:///'+os.environ['DATA_DIR']+'/tests.db'
-os.environ['COOKIE_SECURE']='false'
+# Never let the developer's root .env leak real keys or a live worker into tests.
+for key in ['BRAVE_SEARCH_API_KEY','AI_API_KEY','OPENAI_API_KEY','APOLLO_API_KEY','DOCUMENT_ENCRYPTION_KEY']: os.environ[key]=''
+os.environ['EMBEDDED_WORKER']='false'
+os.environ['BRAVE_EXPORT_RIGHTS_CONFIRMED']='false'
 os.environ['BRAVE_STORAGE_RIGHTS_CONFIRMED']='true'
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
-from app.db import Base,engine,Session,User
-from app.security import hash_password
+from app.db import Base,engine,Session,local_user
 
 @pytest.fixture(autouse=True)
 def database():
@@ -21,15 +23,12 @@ def database():
 
 @pytest.fixture
 def user():
-    with Session() as db:
-        u=User(email='searcher@example.com',password=hash_password('test-password-123')); db.add(u); db.commit(); return u
+    with Session() as db: return local_user(db)
 
 @pytest.fixture
 def client(user):
     import re
     with TestClient(app) as client:
-        r=client.get('/login'); nonce=re.search(r'name="nonce" value="([^"]+)"',r.text)[1]
-        assert client.post('/login',data={'email':user.email,'password':'test-password-123','nonce':nonce}).status_code==200
         page=client.get('/'); csrf=re.search(r'name="csrf-token" content="([^"]+)"',page.text)[1]
         client.headers['X-CSRF-Token']=csrf
         yield client

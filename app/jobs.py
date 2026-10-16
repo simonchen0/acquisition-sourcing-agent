@@ -6,7 +6,7 @@ from sqlalchemy import select, update, func
 from .db import Session, User, Job, Usage, Target, Cache, Document, Evaluation
 from . import config
 from .criteria import Criteria, screen
-from .discovery import BraveProvider, queries, normalize, canonical_url, cache_key, TransientProviderError
+from .discovery import BraveProvider, queries, normalize, canonical_url, cache_key, TransientProviderError, ProviderUnavailable
 from .documents import extract, read_document
 from .evaluation import analyze, estimated_request_cost
 
@@ -35,7 +35,7 @@ def enqueue(db, user, kind, payload, key, budget):
 def reserve(db, job, cost, provider, category):
     """Reserve BEFORE each request; ambiguous failures remain charged conservatively."""
     user = db.get(User,job.user_id)
-    cap = float(user.settings.get('monthly_budget',20))
+    cap = float(user.settings.get('monthly_budget',config.DEFAULT_SETTINGS['monthly_budget']))
     db.execute(update(User).where(User.id==user.id, User.month!=month()).values(month=month(),spend=0))
     if job.spent+cost>job.budget+1e-9: raise ValueError('Per-job spending limit reached. Results have been preserved.')
     result = db.execute(update(User).where(User.id==user.id,User.spend+cost<=cap).values(spend=User.spend+cost))
@@ -153,6 +153,14 @@ def tick():
             jid=job.id; db.rollback(); job=db.get(Job,jid)
             job.status='failed'; job.lease=0
             # Provider response bodies and secrets never appear in error messages.
-            job.error=str(exc)[:500] if isinstance(exc,ValueError) else f'{type(exc).__name__}: operation failed; inspect server diagnostics without logging confidential materials.'
+            job.error=str(exc)[:500] if isinstance(exc,(ValueError,ProviderUnavailable)) else f'{type(exc).__name__}: operation failed; inspect server diagnostics without logging confidential materials.'
             db.commit()
         return True
+
+
+def work(stop):
+    """Poll for jobs until the threading.Event `stop` is set."""
+    while not stop.is_set():
+        try: busy = tick()
+        except Exception: busy = False
+        if not busy: stop.wait(1)
