@@ -1,15 +1,17 @@
 # Validation
 
-Local-only build (no sign-in), validated on macOS on 2026-10-16.
+Local-only build (no sign-in) merged with the Apollo pipeline from `main`, validated on macOS on 2026-10-16.
 
 | Check | Result |
 | --- | --- |
-| `.venv/bin/pytest -q` | 46 passed (SQLite, mocked providers; tests blank out `.env` keys) |
-| `node --check app/static/app.js` | Passed |
-| `python -m app` startup | `/health` ok; pages load with no sign-in; `/login` is 404 |
-| Request guard | POST without the page token → 403; non-loopback `Host` header → 403 |
-| `.env` loading | Brave and OpenAI keys detected from the root `.env` with nothing exported in the shell |
-| Live Brave sourcing (embedded worker) | HVAC × Ohio, brokered, target 100: 13 queries, $0.065 reserved, 100 targets saved, xlsx export 200 |
-| Live OpenAI evaluation | **Not verified:** the OpenAI key in `.env` (`OPENAI_API_KEY`) was rejected with HTTP 401 `invalid_api_key` |
+| `.venv/bin/pytest -q` | 75 passed (SQLite, mocked providers, synthetic Apollo fixtures; tests blank out `.env` keys) |
+| `node --test tests/test_frontend.cjs` | 4 passed |
+| `uv run python -m app` startup | `/health` ok with the embedded worker alive; all 7 pages load with no sign-in |
+| Request guard | POST without the page token → 403; non-loopback `Host` → 403 |
+| `.env` loading | Apollo, Brave, and OpenAI detected from the root `.env` |
+| Search estimate (HVAC × Ohio, both, 100) | 15 Brave queries + 3 Apollo pages + 100 enrichments = 103 credits, about $2.75 |
+| Live Brave brokered | Ran: 20 brokered rows stored before the job stopped |
+| Live Apollo proprietary | **Failed:** `mixed_companies/search` returned HTTP 403. The key isn't entitled to that endpoint (check plan / API key permissions in Apollo). 1 credit was reserved. |
+| OpenAI key | Accepted (`/v1/models` 200); a full evaluation run was not repeated after the key was replaced |
 
-Known limitation (unchanged from the previous build): Brave-sourced brokered hits are mostly marketplace category pages with no structured facts, so they all land in **Needs Verification**. The Apollo plan in `docs/plans/ai-sourcing-pipeline.md` addresses this.
+Earlier Brave-only run: HVAC × Ohio brokered, target 100, 13 queries, $0.065, 100 rows, xlsx export 200.

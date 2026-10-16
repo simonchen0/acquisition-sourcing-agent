@@ -1,0 +1,9 @@
+{
+  "_fixture_metadata": {"kind": "synthetic", "recorded_live": false},
+  "organization": {
+    "id": "fixture-independent", "name": "Example HVAC Services", "primary_domain": "hvac.example.com", "website_url": "https://hvac.example.com", "linkedin_url": "https://www.linkedin.com/company/example-hvac",
+    "industry": "construction", "keywords": ["hvac", "commercial heating"], "naics_codes": ["238220"], "country": "United States", "state": "Ohio", "city": "Columbus",
+    "estimated_num_employees": 30, "annual_revenue": 6000000, "founded_year": 1998,
+    "primary_phone": {"number": "+1 614-555-0101"}, "short_description": "Synthetic fixture for commercial HVAC services."
+  }
+}

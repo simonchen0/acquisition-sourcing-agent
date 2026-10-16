@@ -10,6 +10,9 @@ os.environ['DATABASE_URL']=test_url or 'sqlite:///'+os.environ['DATA_DIR']+'/tes
 for key in ['BRAVE_SEARCH_API_KEY','AI_API_KEY','OPENAI_API_KEY','APOLLO_API_KEY','DOCUMENT_ENCRYPTION_KEY']: os.environ[key]=''
 os.environ['EMBEDDED_WORKER']='false'
 os.environ['BRAVE_EXPORT_RIGHTS_CONFIRMED']='false'
+os.environ['APOLLO_CREDIT_COST_USD']='0'
+os.environ['APOLLO_STORAGE_RIGHTS_CONFIRMED']='false'
+os.environ['APOLLO_EXPORT_RIGHTS_CONFIRMED']='false'
 os.environ['BRAVE_STORAGE_RIGHTS_CONFIRMED']='true'
 import pytest
 from fastapi.testclient import TestClient

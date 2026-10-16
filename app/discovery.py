@@ -9,8 +9,7 @@ from . import config
 
 BROKER_DOMAINS = ['bizbuysell.com', 'bizquest.com', 'businessesforsale.com', 'dealstream.com']
 
-class ProviderUnavailable(Exception): pass
-class TransientProviderError(Exception): pass
+from .providers import ProviderUnavailable, TransientProviderError
 
 class BraveProvider:
     name = 'Brave Search'
@@ -84,3 +83,6 @@ def normalize(result, category, query):
 
 
 def cache_key(user_id, step): return hashlib.sha256(f'{user_id}:{step}'.encode()).hexdigest()
+
+# Public adapter interface for callers adding provider modules.
+from .apollo import ApolloProvider

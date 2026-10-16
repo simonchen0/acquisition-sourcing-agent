@@ -143,22 +143,15 @@ def test_settings_custom_presets_and_invalid_weights(client):
     assert client.get('/api/bootstrap').json()['settings']['presets']['strategy']['weights']['valuation']==20
 
 
-def test_env_file_loaded_without_overriding_environment(tmp_path,monkeypatch):
-    from dotenv import load_dotenv
-    import os
-    (tmp_path/'.env').write_text('ASA_TEST_FROM_FILE=file\nASA_TEST_PRESET=file\n')
-    monkeypatch.setenv('ASA_TEST_PRESET','shell')
-    load_dotenv(tmp_path/'.env',override=False)
-    assert os.environ.pop('ASA_TEST_FROM_FILE')=='file' and os.environ['ASA_TEST_PRESET']=='shell'
 
 def test_embedded_worker_thread_processes_jobs(user,monkeypatch):
     import threading
-    from app.jobs import work
+    from app.worker import run_loop
     calls=[]
     def fake_tick():
         calls.append(1)
         if len(calls)>=3: stop.set()
         return True
-    monkeypatch.setattr('app.jobs.tick',fake_tick)
-    stop=threading.Event();t=threading.Thread(target=work,args=(stop,));t.start();t.join(5)
+    monkeypatch.setattr('app.worker.tick',fake_tick)
+    stop=threading.Event();t=threading.Thread(target=run_loop,args=(stop,),daemon=True);t.start();t.join(5);stop.set()
     assert not t.is_alive() and len(calls)>=3

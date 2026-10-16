@@ -1,0 +1,4 @@
+{
+  "_fixture_metadata": {"kind": "synthetic", "recorded_live": false},
+  "people": [{"id": "fixture-owner", "first_name": "Alex", "last_name_obfuscated": "S***", "title": "Founder & President", "has_email": true, "has_direct_phone": false}]
+}

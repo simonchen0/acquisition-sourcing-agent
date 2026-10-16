@@ -1,0 +1,10 @@
+{
+  "_fixture_metadata": {"kind": "synthetic", "recorded_live": false, "reason": "No Apollo credential was available; endpoint docs were blocked by the proxy."},
+  "pagination": {"page": 1, "per_page": 100, "total_entries": 4, "total_pages": 1},
+  "organizations": [
+    {"id": "fixture-independent", "name": "Example HVAC Services", "primary_domain": "hvac.example.com", "website_url": "https://hvac.example.com", "industry": "construction", "keywords": ["hvac", "commercial heating"], "country": "United States", "state": "Ohio", "city": "Columbus", "estimated_num_employees": 25, "annual_revenue": 5000000, "founded_year": 1998},
+    {"id": "fixture-duplicate", "name": "Example HVAC (alternate result)", "primary_domain": "hvac.example.com", "website_url": "https://hvac.example.com/about", "country": "United States"},
+    {"id": "fixture-public", "name": "Public fixture", "primary_domain": "public.example.com", "publicly_traded_symbol": "FIXT"},
+    {"id": "fixture-subsidiary", "name": "Subsidiary fixture", "primary_domain": "subsidiary.example.com", "owned_by_organization_id": "parent-fixture"}
+  ]
+}
