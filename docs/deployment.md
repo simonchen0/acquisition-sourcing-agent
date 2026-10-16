@@ -5,11 +5,11 @@ No hosting account, deployment API credentials, or public destination was provid
 ## Docker Compose on an affordable HTTPS host
 
 1. Provision a small Linux VM or managed Docker host. Clone/upload this repository or unpack the source ZIP.
-2. Copy `.env.example` to `.env`, set a strong `POSTGRES_PASSWORD`, and set the same password in `DATABASE_URL`. Keep PostgreSQL private, not publicly exposed.
-3. Set a persistent `DOCUMENT_ENCRYPTION_KEY`. Generate a Fernet key in a private terminal with Python/cryptography, then enter it securely in the host's secret manager. Do not paste it in chat. If omitted, a 0600 key is generated atomically in the private data volume; retain and back it up with the documents.
-4. Configure Brave/OpenAI keys if desired, confirm your provider's storage/export permissions, and set accurate current prices. Both application services need the same variables.
+2. Copy `.env.example` to `.env`, set a strong `POSTGRES_PASSWORD`, and use a URL-safe password; Compose constructs the matching database URL for web and worker. Keep PostgreSQL private, not publicly exposed.
+3. Set a persistent `DOCUMENT_ENCRYPTION_KEY`. Set `COOKIE_SECURE=true` for hosted HTTPS (the local example defaults to false). Generate a Fernet key in a private terminal with Python/cryptography, then enter it securely in the host's secret manager. Do not paste it in chat. If omitted, a 0600 key is generated atomically in the private data volume; retain and back it up with the documents.
+4. Configure Brave/OpenAI keys if desired, confirm your provider's storage/export permissions, and set accurate current prices. Both application services need the same provider variables. Confirm Apollo retention/export rights and actual credit pricing before enabling it.
 5. Run `docker compose up -d --build`. The web process initializes tables after PostgreSQL is healthy. The worker waits for web health before starting to avoid concurrent first-run schema creation.
-6. Provision the initial account using `docker compose exec web /app/.venv/bin/python -m app.cli create-user --email you@example.com`. The command prompts for a password; there is no signup or baked-in account. Add other users with the same administrator-controlled command.
+6. Provision the initial account using `docker compose exec web /app/.venv/bin/python -m app.cli create-user --email you@example.com`. The command prompts for a password; there is no signup or baked-in account. Add other users with the same administrator-controlled command. `app.cli setup` creates only the first account and is repeatable without overwriting credentials.
 7. Configure your HTTPS reverse proxy to forward to host port 8000. Keep `COOKIE_SECURE=true`. Limit request bodies to 11 MB at ingress and timeouts appropriately; uploads themselves are limited to 10 MB each. Do not expose host loopback URLs as onboarding previews.
 8. Verify `/health` returns a connected database, sign in, save/reopen criteria, inspect worker logs, upload/preview a nonconfidential test document, and run an authorized low-budget sourcing job. Test one explicitly initiated AI evaluation after confirming billing and confidentiality arrangements. These live tests were not run without provider credentials.
 
@@ -23,7 +23,7 @@ Use the Dockerfile for a web service and the same image for a worker. Web start 
 /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --no-access-log
 ```
 
-Configure your platform to route to port 8000 (or replace the port with its provided port). Worker command:
+Configure your platform to route to port 8000 (or replace the port with its provided port). Set `EMBEDDED_WORKER=false` on the web service to use a separate production worker. Worker command:
 
 ```text
 /app/.venv/bin/python -m app.worker
@@ -54,9 +54,11 @@ Never disable certificate verification, replace package hashes, or embed a proxy
 
 ## Operations
 
-- Run at least one persistent worker, with a restart policy. Queued jobs will otherwise remain queued. Browser polling is only a display of persisted database progress, not the job executor.
+- Run at least one persistent worker, with a restart policy. Development embeds a worker in the FastAPI lifespan; production Compose explicitly disables this and starts a separate worker. Queued jobs remain queued when all workers are offline. Browser polling is only a display of persisted database progress, not the job executor.
 - Stale running jobs are reclaimable after the 300-second lease. Each successful sourcing query advances a persisted checkpoint. Retries keep successful candidates and obey remaining approved budgets. An AI request interrupted after the provider accepted it may be repeated on recovery; the original ambiguous reservation remains charged.
 - Back up PostgreSQL, documents, and the encryption key consistently. Test restore. Infrastructure backup retention must respect confidential-material deletion policies.
 - Use HTTPS, encrypted database storage, private volumes, restricted operator access, and provider-side spending limits. Application encryption covers uploaded document bytes; SQL report/notes fields rely on access controls and infrastructure encryption.
 - The initial schema is created using `create_all`. It is not a migration framework. Introduce reviewed schema migrations before updating database models on a live deployment.
 - Monitor health, persistent failed/incomplete jobs, worker restart logs, disk usage, and provider invoices. This initial release does not include a hosted scheduler, full observability platform, or distributed object-storage service.
+
+The local `.env.example` defaults `COOKIE_SECURE=false` for loopback HTTP; production must set it to `true` behind HTTPS. Native local execution loads `.env` automatically. Compose supplies its own PostgreSQL URL from the URL-safe `POSTGRES_PASSWORD` and overrides `DATA_DIR=/data` for both services.

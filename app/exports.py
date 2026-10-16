@@ -4,7 +4,7 @@ import json
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-COLUMNS = ['Name / listing title','Category','Description','Source URL','Source','Revenue','EBITDA','SDE','Asking price','Industry','Country','Location','Employees','Screening status','Needs verification','Contact information','Last researched','Sale status']
+COLUMNS = ['Name / listing title','Category','Description','Source URL','Source','Revenue','EBITDA','SDE','Asking price','Industry','Country','Location','Employees','Screening status','Needs verification','Contact information','Last researched','Sale status','Fit tier','Fit reasons','HQ city','HQ state','Founded year','Employees (Apollo est.)','Revenue (Apollo est., USD)','Financial data basis','Ownership / parent','Funding','Owner / decision-maker name and title','Contact revealed (Y/N)','Apollo URL','LinkedIn URL','Website']
 
 def safe_cell(v):
     value = '' if v is None else str(v)
@@ -13,12 +13,13 @@ def safe_cell(v):
 
 def target_rows(targets):
     rows = []
-    for t in targets:
+    tier_order={'Strong fit':0,'Possible fit':1,'Likely out of range':2,'Excluded':3}
+    for t in sorted(targets,key=lambda t:(tier_order.get(t.screening.get('tier'),1),str(t.data.get('name','')).casefold())):
         d = t.data
         if not d.get('export_allowed',False): continue
         facts = d.get('facts',{})
         val = lambda k: facts.get(k,{}).get('value','')
-        rows.append([d['name'],t.category,d.get('description',''),d.get('url',''),d.get('source',''),val('revenue'),val('ebitda'),val('sde'),val('asking_price'),val('industry'),val('country'),val('location'),val('employees'),t.screening['status'],', '.join(t.screening.get('missing',[])),json.dumps(d.get('contacts',[])),d.get('last_researched',''),d.get('sale_status','')])
+        rows.append([d['name'],t.category,d.get('description',''),d.get('url',''),d.get('source',''),val('revenue'),val('ebitda'),val('sde'),val('asking_price'),val('industry'),val('country'),val('location'),val('employees'),t.screening['status'],', '.join(t.screening.get('missing',[])),json.dumps(d.get('contacts',[])),d.get('last_researched',''),d.get('sale_status',''),t.screening.get('tier','Possible fit'),'; '.join(t.screening.get('fit_reasons',[])),val('city'),val('state'),val('founded_year'),val('employees') if d.get('source')=='Apollo' else '',val('revenue') if d.get('source')=='Apollo' else '', '; '.join(f'{key}: {facts[key].get("basis",facts[key].get("status","unknown"))}' for key in ['revenue','ebitda','employees'] if key in facts),val('ownership_parent'),json.dumps({'total_funding':val('total_funding'),'latest_stage':val('latest_funding_stage')}),'; '.join(str(c.get('name') or '')+' / '+str(c.get('title') or '') for c in d.get('contacts',[]) if c.get('name')),'Y' if any(c.get('revealed') for c in d.get('contacts',[])) else 'N',d.get('apollo_url',''),d.get('linkedin_url',''),d.get('website','')])
     return rows
 
 

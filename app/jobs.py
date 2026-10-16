@@ -9,6 +9,7 @@ from .criteria import Criteria, screen
 from .discovery import BraveProvider, queries, normalize, canonical_url, cache_key, TransientProviderError
 from .documents import extract, read_document
 from .evaluation import analyze, estimated_request_cost
+from .providers import ProviderThrottled
 
 ACTIVE = ['queued','running','retrying']
 LEASE_SECONDS = 300
@@ -34,8 +35,10 @@ def enqueue(db, user, kind, payload, key, budget):
 
 def reserve(db, job, cost, provider, category):
     """Reserve BEFORE each request; ambiguous failures remain charged conservatively."""
+    import math
+    if not math.isfinite(cost) or cost<0: raise ValueError('Invalid cost reservation.')
     user = db.get(User,job.user_id)
-    cap = float(user.settings.get('monthly_budget',20))
+    cap = float(user.settings.get('monthly_budget',config.DEFAULT_MONTHLY_BUDGET))
     db.execute(update(User).where(User.id==user.id, User.month!=month()).values(month=month(),spend=0))
     if job.spent+cost>job.budget+1e-9: raise ValueError('Per-job spending limit reached. Results have been preserved.')
     result = db.execute(update(User).where(User.id==user.id,User.spend+cost<=cap).values(spend=User.spend+cost))
@@ -58,11 +61,11 @@ def claim(db):
 def counts(db,job,category):
     all_targets = db.scalars(select(Target).where(Target.job_id==job.id,Target.category==category)).all()
     c = Criteria.model_validate(job.payload['criteria'])
-    eligible = [t for t in all_targets if t.screening['status']=='Matches Known Criteria' or (c.include_verification and t.screening['status']=='Needs Verification')]
+    eligible = [t for t in all_targets if t.data.get('_apollo_stage') in (None,'complete') and t.screening.get('tier')!='Likely out of range' and (t.screening['status']=='Matches Known Criteria' or (c.include_verification and t.screening['status']=='Needs Verification'))]
     return len(eligible)
 
 
-def run_sourcing(db,job):
+def run_brave_sourcing(db,job):
     c = Criteria.model_validate(job.payload['criteria'])
     steps = queries(c.model_dump())
     # Round-robin categories avoids consuming a 'both' job entirely on brokered queries.
@@ -138,13 +141,29 @@ def run_evaluation(db,job):
     job.status='completed'; job.lease=0; job.progress={'evaluation':'Complete'}; db.commit()
 
 
+def run_sourcing(db,job):
+    provider=job.payload.get('proprietary_provider')
+    # Old queued jobs retain their original Brave contract when Apollo is later enabled.
+    if provider=='apollo':
+        from .pipeline import run_pipeline
+        return run_pipeline(db,job)
+    return run_brave_sourcing(db,job)
+
+
 def tick():
     with Session() as db:
         job = claim(db)
         if not job: return False
         try:
             if job.cancel: job.status='cancelled'; job.lease=0; db.commit(); return True
-            (run_sourcing if job.kind=='sourcing' else run_evaluation)(db,job)
+            if job.kind=='sourcing':run_sourcing(db,job)
+            elif job.kind=='evaluation':run_evaluation(db,job)
+            elif job.kind=='contact_reveal':
+                from .pipeline import run_contact_reveal
+                run_contact_reveal(db,job)
+            else:raise ValueError('Unknown job kind.')
+        except ProviderThrottled as exc:
+            db.rollback();job=db.get(Job,job.id);job.status='retrying';job.error=str(exc);job.lease=time.time()+exc.retry_after;db.commit()
         except TransientProviderError as exc:
             db.rollback(); job=db.get(Job,job.id); job.attempts+=1; job.error=str(exc)
             job.status='retrying' if job.attempts<3 else 'failed'; job.lease=time.time()+min(2**job.attempts*5,60) if job.status=='retrying' else 0

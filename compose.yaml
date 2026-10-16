@@ -15,6 +15,10 @@ services:
     restart: unless-stopped
   web:
     build: .
+    environment:
+      EMBEDDED_WORKER: "false"
+      DATA_DIR: /data
+      DATABASE_URL: postgresql+psycopg://acquisition:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/acquisition
     env_file: .env
     ports: ["127.0.0.1:8000:8000"]
     volumes: ["documents:/data"]
@@ -24,6 +28,10 @@ services:
     init: true
   worker:
     build: .
+    environment:
+      EMBEDDED_WORKER: "false"
+      DATA_DIR: /data
+      DATABASE_URL: postgresql+psycopg://acquisition:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/acquisition
     env_file: .env
     command: ["/app/.venv/bin/python", "-m", "app.worker"]
     healthcheck: {disable: true}

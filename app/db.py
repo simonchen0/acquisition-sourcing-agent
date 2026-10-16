@@ -122,3 +122,11 @@ class LoginAttempt(Base):
     key: Mapped[str] = mapped_column(String(64),primary_key=True)
     count: Mapped[int] = mapped_column(default=0)
     window: Mapped[float] = mapped_column(Float,default=time.time)
+
+
+class ProviderRate(Base):
+    __tablename__ = 'provider_rates'
+    key: Mapped[str] = mapped_column(String(64),primary_key=True)
+    next_allowed: Mapped[float] = mapped_column(Float,default=0)
+    window_start: Mapped[float] = mapped_column(Float,default=time.time)
+    calls: Mapped[int] = mapped_column(default=0)

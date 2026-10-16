@@ -20,6 +20,8 @@ from .security import hash_password, verify_password, safe_public_url
 from .criteria import Criteria, CHARACTERISTICS, screen
 from .jobs import enqueue, ACTIVE, month
 from .discovery import queries, canonical_url
+from .apollo import available as apollo_available, require_config as require_apollo, build_org_filters, revenue_band
+from .providers import ProviderUnavailable
 from .documents import store, read_document, extract
 from .evaluation import FRAMEWORKS, FinancialDatum, weights_valid
 from .exports import export_targets, evaluation_markdown
@@ -27,7 +29,18 @@ from .exports import export_targets, evaluation_markdown
 @asynccontextmanager
 async def lifespan(app):
     init_db()
-    yield
+    worker = None
+    if config.EMBEDDED_WORKER:
+        from .worker import start_embedded
+        worker = start_embedded()
+    try:
+        yield
+    finally:
+        if worker:
+            worker[0].set()
+            import asyncio
+            await asyncio.to_thread(worker[1].join, 5)
+
 
 app=FastAPI(title='Acquisition Sourcing Agent',lifespan=lifespan,docs_url=None,redoc_url=None)
 app.mount('/static',StaticFiles(directory=config.ROOT/'app/static'),name='static')
@@ -44,7 +57,7 @@ def owned(db,model,record_id,user_id):
 def uid(request): return request.state.user.id
 
 def public_job(job):
-    return {'id':job.id,'kind':job.kind,'status':job.status,'progress':job.progress,'cursor':job.cursor,'error':job.error,'spent':round(job.spent,4),'budget':job.budget,'cancel_requested':job.cancel,'created':job.created,'criteria':job.payload.get('criteria'),'opportunity_id':job.payload.get('opportunity_id')}
+    return {'id':job.id,'kind':job.kind,'status':job.status,'progress':job.progress,'cursor':job.cursor,'error':job.error,'spent':round(job.spent,4),'budget':job.budget,'cancel_requested':job.cancel,'created':job.created,'criteria':job.payload.get('criteria'),'opportunity_id':job.payload.get('opportunity_id'),'target_id':job.payload.get('target_id'),'provider':job.payload.get('proprietary_provider')}
 
 @app.middleware('http')
 async def controls(request,call_next):
@@ -74,7 +87,7 @@ def favicon(): return Response(status_code=204)
 
 @app.get('/health')
 def health(db:DBSession=Depends(session_db)):
-    db.execute(select(1)); return {'status':'ok','database':'connected'}
+    db.execute(select(1)); return {'status':'ok','database':'connected','worker_mode':'embedded' if config.EMBEDDED_WORKER else 'external','embedded_worker_alive':any(t.name=='sourcing-worker' and t.is_alive() for t in __import__('threading').enumerate())}
 
 @app.get('/login',response_class=HTMLResponse)
 def login_page(request:Request):
@@ -123,8 +136,8 @@ def page(request:Request):
 @app.get('/api/bootstrap')
 def bootstrap(request:Request,db:DBSession=Depends(session_db)):
     return {'characteristics':CHARACTERISTICS,'frameworks':FRAMEWORKS,'criteria':[{'id':c.id,'name':c.name,'data':c.data} for c in db.scalars(select(CriteriaRecord).where(CriteriaRecord.user_id==uid(request)))],
-            'settings':request.state.user.settings,'providers':{'brave':bool(config.BRAVE_KEY) and config.BRAVE_STORAGE_RIGHTS,'openai':bool(config.AI_KEY)},
-            'pricing':{'brave_request':config.BRAVE_REQUEST_COST,'ai_input_million':config.AI_INPUT_COST,'ai_output_million':config.AI_OUTPUT_COST,'model':config.AI_MODEL},
+            'settings':request.state.user.settings,'defaults':{'search_budget':config.DEFAULT_SEARCH_BUDGET,'monthly_budget':config.DEFAULT_MONTHLY_BUDGET},'providers':{'apollo':{'configured':bool(config.APOLLO_KEY),'storage_confirmed':config.APOLLO_STORAGE_RIGHTS,'pricing_configured':config.APOLLO_CREDIT_COST>0,'export_allowed':config.APOLLO_EXPORT_RIGHTS},'brave':bool(config.BRAVE_KEY) and config.BRAVE_STORAGE_RIGHTS,'openai':bool(config.AI_KEY)},
+            'pricing':{'brave_request':config.BRAVE_REQUEST_COST,'ai_input_million':config.AI_INPUT_COST,'ai_output_million':config.AI_OUTPUT_COST,'model':config.AI_MODEL,'apollo_credit':config.APOLLO_CREDIT_COST,'apollo_reveal_credits':config.APOLLO_REVEAL_CREDITS},
             'month_spend':request.state.user.spend if request.state.user.month==month() else 0}
 
 @app.post('/api/criteria')
@@ -140,18 +153,40 @@ class SearchInput(BaseModel):
     idempotency_key: str=Field(min_length=8,max_length=64)
     budget:float=Field(gt=0,le=100,allow_inf_nan=False)
 
+def sourcing_readiness(criteria):
+    errors=[]
+    uses_apollo=apollo_available() and criteria.mode in ['proprietary','both']
+    uses_brave=criteria.mode in ['brokered','both'] or not uses_apollo
+    if uses_apollo:
+        try:require_apollo()
+        except ProviderUnavailable as exc:errors.append(str(exc))
+    if uses_brave and (not config.BRAVE_KEY or not config.BRAVE_STORAGE_RIGHTS):errors.append('Brave Search needs its API key and confirmed storage rights for brokered discovery / proprietary fallback.')
+    return uses_apollo,uses_brave,errors
+
+
 @app.post('/api/search/estimate')
 def search_estimate(c:Criteria,request:Request):
-    steps=queries(c.model_dump()); amount=len(steps)*config.BRAVE_REQUEST_COST
-    return {'queries':len(steps),'estimated_max_cost':round(amount,3),'categories':2 if c.mode=='both' else 1,'available':bool(config.BRAVE_KEY) and config.BRAVE_STORAGE_RIGHTS}
+    apollo,brave,errors=sourcing_readiness(c)
+    steps=queries(c.model_dump())
+    brave_queries=len([s for s in steps if s['category']=='brokered' or not apollo]) if brave else 0
+    # Three times the minimum pages is a retrieval ceiling, not a promised match count.
+    apollo_pages=math.ceil(c.target_count/100)*3 if apollo else 0
+    apollo_enrichments=c.target_count if apollo else 0
+    credits=apollo_pages*config.APOLLO_SEARCH_CREDITS+apollo_enrichments*config.APOLLO_ENRICH_CREDITS
+    _,_,expansion=revenue_band(c)
+    return {'queries':brave_queries,'brave_queries':brave_queries,'apollo_search_pages':apollo_pages,'apollo_enrichments':apollo_enrichments,'apollo_people_searches':apollo_enrichments,'apollo_credits':credits,'apollo_credit_cost_usd':config.APOLLO_CREDIT_COST,'estimated_max_cost':round(brave_queries*config.BRAVE_REQUEST_COST+credits*config.APOLLO_CREDIT_COST,3),'categories':2 if c.mode=='both' else 1,'available':not errors,'setup_errors':errors,'proprietary_provider':'apollo' if apollo else 'brave','revenue_expansion':expansion,'note':'Configured credit assumptions are not verified provider billing. Excluded candidates/retries may require additional calls; the approved spending cap always stops the job. Contact reveals are excluded and never automatic.'}
+
 
 @app.post('/api/search')
 def start_search(body:SearchInput,request:Request,db:DBSession=Depends(session_db)):
-    if not config.BRAVE_KEY or not config.BRAVE_STORAGE_RIGHTS: raise HTTPException(409,'Automatic discovery needs BRAVE_SEARCH_API_KEY and confirmation that your plan permits storage (BRAVE_STORAGE_RIGHTS_CONFIRMED=true). No paid request was made.')
-    limit=float(request.state.user.settings.get('search_budget',1))
-    if body.budget>limit: raise HTTPException(400,'Budget exceeds your per-search limit. Adjust Settings first.')
-    job=enqueue(db,request.state.user,'sourcing',{'criteria':body.criteria.model_dump()},body.idempotency_key,body.budget)
+    apollo,_,errors=sourcing_readiness(body.criteria)
+    if errors:raise HTTPException(409,' '.join(errors)+' No paid request was made.')
+    limit=float(request.state.user.settings.get('search_budget',config.DEFAULT_SEARCH_BUDGET))
+    if body.budget>limit:raise HTTPException(400,'Budget exceeds your per-search limit. Adjust Settings first.')
+    payload={'criteria':body.criteria.model_dump(),'proprietary_provider':'apollo' if apollo else 'brave'}
+    job=enqueue(db,request.state.user,'sourcing',payload,body.idempotency_key,body.budget)
     return public_job(job)
+
 
 @app.get('/api/jobs')
 def job_list(request:Request,db:DBSession=Depends(session_db)):
@@ -178,10 +213,14 @@ def visible_targets(db,user_id,category,job_id=None,include_verification=True,ex
     return [t for t in results if t.screening['status'] in statuses]
 
 @app.get('/api/targets')
-def targets(request:Request,category:str='brokered',job_id:int|None=None,verification:bool=True,excluded:bool=False,sort:str='name',db:DBSession=Depends(session_db)):
+def targets(request:Request,category:str='brokered',job_id:int|None=None,verification:bool=True,excluded:bool=False,sort:str='tier',tier:str|None=None,db:DBSession=Depends(session_db)):
     if category not in ['brokered','proprietary']: raise HTTPException(400,'Invalid category.')
-    rows=visible_targets(db,uid(request),category,job_id,verification,excluded)
-    if sort in ['revenue','ebitda','employees']:
+    rows=visible_targets(db,uid(request),category,job_id,verification,excluded or tier=='Excluded')
+    if tier: rows=[t for t in rows if t.screening.get('tier','Possible fit')==tier]
+    if sort=='tier':
+        tiers={'Strong fit':0,'Possible fit':1,'Likely out of range':2,'Excluded':3}
+        rows.sort(key=lambda t:(tiers.get(t.screening.get('tier'),1),str(t.data.get('name','')).casefold()))
+    elif sort in ['revenue','ebitda','employees']:
         rows.sort(key=lambda t:(t.data.get('facts',{}).get(sort,{}).get('value') is None,-float(t.data.get('facts',{}).get(sort,{}).get('value',0))))
     elif sort=='completeness': rows.sort(key=lambda t:len(t.data.get('facts',{})),reverse=True)
     elif sort in ['industry','country','location']: rows.sort(key=lambda t:str(t.data.get('facts',{}).get(sort,{}).get('value','')).lower())
@@ -195,9 +234,10 @@ def target_profile(tid:int,request:Request,db:DBSession=Depends(session_db)):
     return {'id':t.id,'category':t.category,'data':t.data,'screening':t.screening,'opportunities':[{'id':o.id,'name':o.name} for o in opportunities], 'investment_status':'Not Evaluated' if not any(db.scalar(select(Evaluation.id).where(Evaluation.opportunity_id==o.id)) for o in opportunities) else 'See explicit evaluation versions'}
 
 @app.get('/api/export/{category}/{kind}')
-def target_export(category:str,kind:str,request:Request,job_id:int|None=None,verification:bool=True,db:DBSession=Depends(session_db)):
+def target_export(category:str,kind:str,request:Request,job_id:int|None=None,verification:bool=True,tier:str|None=None,excluded:bool=False,db:DBSession=Depends(session_db)):
     if category not in ['brokered','proprietary'] or kind not in ['xlsx','csv']: raise HTTPException(400,'Invalid export.')
-    rows=visible_targets(db,uid(request),category,job_id,verification)
+    rows=visible_targets(db,uid(request),category,job_id,verification,excluded or tier=='Excluded')
+    if tier:rows=[t for t in rows if t.screening.get('tier','Possible fit')==tier]
     return Response(export_targets(rows,kind),media_type='text/csv' if kind=='csv' else 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',headers={'Content-Disposition':f'attachment; filename="{category}-targets.{kind}"'})
 
 @app.post('/api/import')
@@ -337,8 +377,8 @@ def delete_opportunity(oid:int,request:Request,db:DBSession=Depends(session_db))
     db.delete(o); db.commit(); return {'ok':True}
 
 class SettingsInput(BaseModel):
-    monthly_budget:float=Field(20,ge=0,le=10000,allow_inf_nan=False)
-    search_budget:float=Field(1,ge=0,le=100,allow_inf_nan=False)
+    monthly_budget:float=Field(100,ge=0,le=10000,allow_inf_nan=False)
+    search_budget:float=Field(10,ge=0,le=100,allow_inf_nan=False)
     evaluation_budget:float=Field(.25,ge=0,le=100,allow_inf_nan=False)
     frameworks:dict=Field(default_factory=dict)
     presets:dict=Field(default_factory=dict)
@@ -380,3 +420,23 @@ def verify_fact(tid:int,body:FactInput,request:Request,db:DBSession=Depends(sess
     if body.key=='currency' and body.value not in ['USD','CAD']: raise HTTPException(400,'Supported currencies: USD, CAD.')
     data=dict(t.data); facts=dict(data.get('facts',{})); facts[body.key]={'value':body.value,'status':'verified','source':body.source,'quote':body.quote,'verified_by':'Account holder after evidence review'}; data['facts']=facts; t.data=data
     t.screening=screen(data,db.get(Job,t.job_id).payload['criteria']); db.commit(); return {'screening':t.screening}
+
+
+class RevealInput(BaseModel):
+    person_id:str=Field(min_length=1,max_length=100)
+    idempotency_key:str=Field(min_length=8,max_length=64)
+    budget:float=Field(gt=0,le=100,allow_inf_nan=False)
+
+
+@app.post('/api/targets/{tid}/reveal')
+def reveal_contact(tid:int,body:RevealInput,request:Request,db:DBSession=Depends(session_db)):
+    target=owned(db,Target,tid,uid(request))
+    if target.category!='proprietary' or target.data.get('source')!='Apollo':raise HTTPException(400,'Contact reveal is supported only for Apollo proprietary companies.')
+    if not any(c.get('apollo_person_id')==body.person_id for c in target.data.get('contacts',[])):raise HTTPException(404,'Contact not found for this company.')
+    try:require_apollo()
+    except ProviderUnavailable as exc:raise HTTPException(409,str(exc))
+    minimum=config.APOLLO_REVEAL_CREDITS*config.APOLLO_CREDIT_COST
+    if body.budget<minimum:raise HTTPException(400,f'Approve at least ${minimum:.3f} based on configured reveal credits.')
+    if body.budget>float(request.state.user.settings.get('search_budget',config.DEFAULT_SEARCH_BUDGET)):raise HTTPException(400,'Reveal exceeds your per-operation search/enrichment spending limit.')
+    payload={'target_id':tid,'person_id':body.person_id}
+    return public_job(enqueue(db,request.state.user,'contact_reveal',payload,body.idempotency_key,body.budget))

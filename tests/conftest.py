@@ -7,6 +7,10 @@ if test_url and not (make_url(test_url).database or '').endswith(('_test','_test
     raise RuntimeError('TEST_DATABASE_URL must name a dedicated database ending in _test or _tests. Tests recreate its tables.')
 os.environ['DATABASE_URL']=test_url or 'sqlite:///'+os.environ['DATA_DIR']+'/tests.db'
 os.environ['COOKIE_SECURE']='false'
+os.environ['EMBEDDED_WORKER']='false'
+for credential in ['APOLLO_API_KEY','BRAVE_SEARCH_API_KEY','AI_API_KEY','OPENAI_API_KEY']:
+    os.environ[credential]=''  # Tests must never inherit paid credentials from .env or the host.
+os.environ['APOLLO_CREDIT_COST_USD']='0'
 os.environ['BRAVE_STORAGE_RIGHTS_CONFIRMED']='true'
 import pytest
 from fastapi.testclient import TestClient

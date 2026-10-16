@@ -1,79 +1,78 @@
 # Acquisition Sourcing Agent
 
-A functional two-stage web application for search fund acquisition discovery and **explicitly initiated** investment evaluation. FastAPI, SQLAlchemy, Pydantic, a durable SQL-backed worker, PostgreSQL in production, and SQLite for single-machine development. No CRM or outreach automation.
+A two-stage acquisition-sourcing application: discover companies/listings, then explicitly evaluate selected opportunities after receiving diligence materials. FastAPI, SQLAlchemy, Pydantic, a durable job worker, PostgreSQL in production, and SQLite for local development. No automated outreach or CRM.
 
-## What is implemented
+## Run locally — Linux or macOS
 
-- Six-section guided questionnaire: searchable industry and location choices, preserved custom options, exclusions, optional financial ranges, currencies, customer/revenue models, Yes/No characteristics with requirement strength, brokered/proprietary/both, and 100/250/500 targets **per category**. Review and save criteria before sourcing.
-- Documented Brave Search API integration for both proprietary candidates and publicly indexed business-for-sale listings. No marketplace scraping, private-platform access, or invented companies. Original URLs and snippets remain linked to candidates.
-- Separate dashboards, factual sorting, job-specific lists, company profiles, public contact extraction, supported manual fact verification, and cross-result deduplication. Search snippets and authorized imports are unverified until evidence is reviewed. Unknowns become **Needs Verification**, known conflicts become **Excluded**, and preferences never exclude.
-- Persistent jobs with checkpoints, a renewable lease, bounded transient retries, cancellation, duplicate-active-job prevention, and collection preserved after failures. Browser closure does not stop the worker. Target shortfalls and exhausted budgets are explicit.
-- Authorized CSV/XLSX import; CSV/Excel sourcing exports with spreadsheet formula protection and licensing gates. No investment scores in sourcing tables or exports.
-- Separate standalone or sourced-company evaluation workspaces, encrypted uploads, PDF/CSV/XLSX/TXT extraction with source locations, explicit text previews, editable financial inputs, on-demand OpenAI analysis, deterministic financial ratios, validated literal citations, customizable category frameworks/presets, version history, readable Markdown and JSON reports.
-- Per-account access controls, PBKDF2 password hashing, hashed session tokens, secure cookies, CSRF protection, sign-in rate limits, restricted URL schemes, confidential-material deletion, per-operation budgets, monthly cost reservations, and provider usage records.
-
-**Live data/AI status:** no Brave or OpenAI credentials were provided during this build. Adapter calls were verified with mocked HTTP responses, not live providers. No 100–500-company live search, live AI evaluation, or public deployment has been claimed. Marketplace hits are possible listing candidates, not verified active listings; proprietary candidates are not confirmed sellers. Detailed contact enrichment is not implemented; only explicit names/titles, LinkedIn URLs, emails, and phone numbers actually displayed in source material are extracted. Scanned PDF OCR and legacy XLS are not supported.
-
-## Run for development
-
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). From this repository:
+Python 3.12+ and [uv](https://docs.astral.sh/uv/) are required. From this checkout:
 
 ```bash
-export UV_CACHE_DIR=/workspace/.uv-cache  # or another writable cache path
 uv sync --frozen
-.venv/bin/python -m app.cli init-db
-.venv/bin/python -m app.cli create-user --email you@example.com
-COOKIE_SECURE=false .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+cp .env.example .env  # only if you don't already have a .env; preserve existing settings
+.venv/bin/python -m app.cli setup
+scripts/dev-start.sh
 ```
 
-The account command prompts securely for a password of at least 12 characters. There is no public signup or default password. In another terminal, with the **same DATABASE_URL and DATA_DIR**:
+`setup` initializes the database and prompts for the first account's email/password. Rerunning it preserves existing accounts and passwords. Activate `.venv` first if you prefer `python -m app.cli setup`. There is no default password or public signup. `ADMIN_EMAIL` / `ADMIN_PASSWORD` can be supplied securely for noninteractive provisioning; never commit them.
 
-```bash
-.venv/bin/python -m app.worker
-```
+The application now loads `.env` automatically for both web and standalone worker, without overriding injected environment variables. Local defaults use `.data/app.db`. Set `COOKIE_SECURE=false` for local HTTP; `.env.example` does this. Set it **true** for hosted HTTPS. PostgreSQL and `/data` overrides belong in production configuration; Compose supplies them to its services.
 
-Alternatively, `scripts/dev-start.sh` starts both development processes with private logs/PID files; it is repeatable. `scripts/dev-stop.sh` stops only processes belonging to this checkout. Use your local browser on port 8000. `COOKIE_SECURE=false` is for loopback HTTP development only; leave it true behind HTTPS in production. `.env` is read automatically by Docker Compose, **not** by the Python application: export settings into the process environment or use your hosting provider's configuration. Optional local uvicorn `--env-file .env` loads variables only for the web process; the worker needs the same configuration.
+The web process starts a background worker thread by default. **No second command is required for development.** Jobs stay in SQL, survive browser closure, and recover on process restart. The portable start/stop scripts use `ps` and `grep`, not `/proc` or ripgrep, and verify absolute checkout command paths before stopping processes. `scripts/dev-stop.sh` stops the development service. `/health` reports database connection and embedded-worker mode/liveness. Native macOS execution was not available for verification in the Linux build environment.
 
-Without provider keys, criteria, imports, profiles, authentication, document storage/previews, financial corrections, and exports work. Automatic discovery and AI evaluation visibly require configuration. They never silently use fabricated results.
+For production set `EMBEDDED_WORKER=false` on web and run `.venv/bin/python -m app.worker` separately. Compose already does this. See [deployment](docs/deployment.md).
 
-## Connect real providers
+## Sourcing pipeline
 
-Set these server-side environment variables on **both** web and worker; do not paste keys into chat or commit them:
+The guided questionnaire preserves custom industries, exclusions, geography, optional financial/employee ranges, Yes/No business characteristics, requirement/preference distinctions, and 100/250/500 targets **per selected category**.
 
-| Variable | Purpose |
+- **Proprietary, when Apollo is configured:** company search → exclude known public/subsidiary records → deduplicate domains → enrich up to the requested number of candidates → owner/decision-maker lookup → factual screening → export.
+- **Brokered:** Brave public indexed listing searches. The app does not scrape or access private marketplaces.
+- **Fallback:** if no Apollo key is configured, the existing Brave proprietary discovery remains available and is identified as the provider in the search estimate. A configured but unusable Apollo key is reported as a setup error rather than silently bypassed.
+- **Costs:** reserve before every paid call, user-scoped cache, persistent checkpoints, cancellation, bounded transient retries, and per-operation/monthly caps. New-account defaults are **$10/search and $100/month**, editable in Settings; previously saved limits are preserved. API prices must match your plan.
+- **Contacts:** free owner/decision-maker lookup retains first name/title and availability flags only. **Reveal contact email** is a separate explicitly approved, budgeted job. Phone and personal-email reveals are disabled. Reveals are never automatic.
+
+### Evidence and factual tiers
+
+User-confirmed facts outrank supported provider reports. Unattributed snippets/imports stay unverified. Apollo revenue and employee counts are **modeled estimates**, labeled in the UI and spreadsheet; they do not confirm mandatory financial ranges. Unknowns are never invented or treated as satisfying a requirement.
+
+Tiers are **Strong fit**, **Possible fit**, **Likely out of range**, and **Excluded**, with factual reasons. Only Strong/Possible fill the requested target count; estimates outside a range become Likely out of range rather than hard exclusions. Hard exclusions need conflicting confirmed/provider-reported evidence. Known public companies/parents are excluded; institutional funding is flagged, and conflicts with a Required independent-private-ownership criterion.
+
+**There is no numeric sourcing fit score or investment score.** The user's explicit decision was to omit sourcing scores. Tier ordering followed by company name is deterministic. Investment scoring remains exclusively in the separate evaluation workflow.
+
+Financial filters retain their original values. Illustrative margin assumptions in `app/benchmarks.json` can widen Apollo's USD retrieval range when EBITDA criteria are provided, but never supply company EBITDA or prove a financial match. CAD amounts are not sent as USD revenue filters. See [sources](docs/providers.md) for limitations.
+
+## Provider configuration
+
+Add values securely to `.env` locally or your host's server-side secret manager; never paste keys into chat or source control.
+
+| Settings | Purpose |
 | --- | --- |
-| `BRAVE_SEARCH_API_KEY` | Brave Search API subscription token |
-| `BRAVE_STORAGE_RIGHTS_CONFIRMED=true` | Enable retained discovery only after confirming your subscription permits storage |
-| `BRAVE_EXPORT_RIGHTS_CONFIRMED=true` | Optional: enable re-export only if your license permits it; false by default |
-| `AI_API_KEY` | OpenAI credential; `OPENAI_API_KEY` is also accepted in ordinary hosting |
-| `AI_MODEL` | Default `gpt-4.1-mini`; choose a chat-completions model supporting JSON mode |
+| `APOLLO_API_KEY` | Apollo API credential with appropriate paid-plan endpoint entitlements |
+| `APOLLO_CREDIT_COST_USD` | Actual cost of one credit; blank/zero disables Apollo requests |
+| `APOLLO_SEARCH_CREDITS`, `APOLLO_ENRICH_CREDITS`, `APOLLO_REVEAL_CREDITS` | Configurable per-call credit assumptions; defaults 1, **not independently verified** |
+| `APOLLO_STORAGE_RIGHTS_CONFIRMED=true` | Enable retention only after confirming your license permits it |
+| `APOLLO_EXPORT_RIGHTS_CONFIRMED=true` | Enable re-export only when licensed; false by default |
+| `BRAVE_SEARCH_API_KEY` | Brokered discovery and optional proprietary fallback |
+| `BRAVE_STORAGE_RIGHTS_CONFIRMED=true`, `BRAVE_EXPORT_RIGHTS_CONFIRMED=true` | Separate licensed-retention/export controls |
+| `AI_API_KEY` | Optional OpenAI document evaluation; ordinary hosting also accepts `OPENAI_API_KEY` |
 
-Allow HTTPS egress to `api.search.brave.com` and `api.openai.com`. The Codex cloud secret binding uses `AI_API_KEY` because the platform reserves `OPENAI_` variable names. Connection indicators distinguish configured credentials from verified live access. The first real job tests authorization and reports failures without logging API keys or provider response bodies.
+Allow `api.apollo.io`, `api.search.brave.com`, and optionally `api.openai.com`. Read Apollo documentation at `docs.apollo.io`. The code enforces at least six seconds between Apollo calls plus at most 600/hour across workers sharing a credential; reduce the hourly limit for a more restrictive plan. Local pacing checkpoints the job and does not consume another credit or retry attempt.
 
-See [data sources and API setup](docs/providers.md) and [cost estimates](docs/costs.md).
+**Integration status:** Apollo adapters and workflow are tested with explicitly synthetic fixtures. No Apollo key was supplied, and the proxy blocked documentation pages (403). Endpoint compatibility, response shapes, current credit prices, actual sourcing quality, and re-export licensing remain **unverified live**. The handoff document's claimed credit rates are configurable assumptions, not verified facts. No paid API calls were made during this upgrade. [Validation](docs/validation.md) distinguishes actual execution from mocks.
 
-## Screening and scoring
+## Investment evaluation
 
-Source facts have `value`, `status`, `source`, and a supporting quote. Snippet financials are **reported**, not independently verified. Unknown currency prevents mandatory financial criteria from being satisfied. Facts manually confirmed by the account holder can satisfy screening; this is clearly identified as user-reviewed evidence, not independent platform verification. Location and industry filters require explicit supported facts, rather than inferring them from a search query. SDE is never substituted for EBITDA.
+Dedicated standalone or sourced-company workspaces support encrypted PDF/XLSX/CSV/TXT uploads, local text preview, editable financial inputs, explicit AI evaluation, source locations/citations, deterministic financial calculations, customizable category frameworks, saved presets, versions, and Markdown/JSON exports. Upload alone never triggers extraction or AI. Scanned PDFs need prior OCR; legacy XLS is not supported.
 
-Evaluation scores exist only in versioned evaluation records. Upload does not extract or analyze; **Preview text** performs local extraction, and **Evaluate Investment** alone queues paid AI analysis. A criterion contributes to scoring only when it has reported/calculated support with exact uploaded-document quotes. Missing criteria are unscored and weights are normalized over supported evidence. Overall scores additionally require at least 70% weighted evidence coverage, financial-performance evidence, and supported revenue plus EBITDA or operating income for the same period/currency. Otherwise the report returns **Insufficient Information**. Valid quotes do not prove the AI's interpretation is correct: reports remain preliminary, and narrative findings require diligence.
+An overall score requires at least 70% weighted evidence coverage, a financial-performance assessment with exact document citations, and supported revenue plus EBITDA/operating income for the same period/currency. Otherwise reports return **Insufficient Information**. Missing evidence receives neither credit nor penalty. Claimed add-backs/third-party estimates stay separate, contradictions are flagged, and incompatible financial figures are excluded from calculations. Reports remain preliminary diligence support.
 
-Financial calculations use Decimal arithmetic and separate currencies/periods. Claimed adjustments and third-party estimates are displayed separately and excluded from deterministic calculations. User-reviewed figures replace extracted values for the same metric/year/currency. Contradictions and rejected citations/amounts are flagged. Reruns create new versions. Correct latest extracted financial figures through **Use latest extracted figures for correction**, save, and explicitly rerun.
+## Exports, imports, and security
 
-## Deployment
+CSV/Excel exports include factual tiers/reasons, estimate labels, ownership/funding information, contact availability, and source URLs. Re-export is gated per provider; formula protection is retained. No sourcing scores are exported. Authorized CSV/XLSX imports supplement automatic discovery; imported facts remain unverified. PitchBook access does not imply API or re-export entitlement.
 
-See [deployment instructions](docs/deployment.md). Included: non-root Docker image, PostgreSQL + web + worker Compose configuration, persistent document/database volumes, `.env.example`, health check, and frozen dependency lockfile. HTTPS and hosting accounts are required for an online deployment; none were provided here.
+Accounts are administrator-provisioned with PBKDF2 password hashes, hashed session tokens, CSRF checks, rate-limited sign-in, and account-scoped records. Uploaded file bytes use Fernet encryption. SQL notes, reports, and extracted figures rely on access controls and infrastructure encryption. Use HTTPS, encrypted managed storage/backups, private volumes, and consistent backups of database/documents/key. Deleting confidential workspaces removes their reports/materials; document deletion removes reports that could quote it. Provider request bodies/keys are not logged.
 
-```bash
-cp .env.example .env
-# Edit .env securely: set POSTGRES_PASSWORD, matching DATABASE_URL, encryption key, and provider keys.
-docker compose up -d --build
-docker compose exec web /app/.venv/bin/python -m app.cli create-user --email you@example.com
-```
-
-Keep `COOKIE_SECURE=true` and use an HTTPS reverse proxy. Compose exposes the web service on host loopback only. Set `COOKIE_SECURE=false` only for local HTTP testing. Back up the database, document volume, and encryption key together; the app cannot decrypt files after losing the key.
-
-## Validation and source archive
+## Tests and packaging
 
 ```bash
 uv sync --frozen
@@ -82,10 +81,6 @@ node --check app/static/app.js
 .venv/bin/python scripts/package.py
 ```
 
-The archive is `dist/acquisition-sourcing-agent.zip`; it excludes credentials, uploaded files, virtual environments, caches, and Git metadata. [Validation report](docs/validation.md) records actual runs and their limitations.
+Tests ignore the application's database and paid credentials, using disposable SQLite by default. PostgreSQL tests require `TEST_DATABASE_URL` naming an isolated `_test` or `_tests` database and recreate its tables. Fixtures under `tests/fixtures/apollo_*.json` are synthetic, not recorded provider responses.
 
-## Security and operational boundaries
-
-Accounts are administrator-provisioned. Confidential uploads use Fernet encryption; notes, extracted reports, session metadata, and structured financials are access-controlled SQL records, **not additionally encrypted by this application**. Production requires encrypted managed database storage, HTTPS, restricted operator access, encrypted backups, and a shared private document volume. Deleting a document also removes previous reports for its opportunity that may quote it; deleting the workspace removes its notes, financial inputs, files, reports, and evaluation-job snapshots. Infrastructure backup retention is controlled by your host.
-
-For this first release, schema initialization uses SQLAlchemy `create_all`; it does not upgrade existing schemas. Back up and add explicit migrations before future schema changes. Keep the worker running; web health validates database connectivity, not worker health. Reservations are conservative estimates, including ambiguous failed requests; they are not a reconciliation of provider invoices. Provider prices and model capabilities must be checked against your current subscriptions. No paid provider is activated automatically.
+`dist/` is ignored and no longer tracked. The packaging command creates a source-only ZIP locally, excluding credentials, uploads, environments, and Git metadata. See [costs](docs/costs.md), [provider setup](docs/providers.md), and [deployment](docs/deployment.md). Public hosting and live provider validation require external credentials; they are not claimed complete.

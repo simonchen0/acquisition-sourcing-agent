@@ -1,0 +1,13 @@
+{
+  "_metadata": {
+    "kind": "illustrative planning assumptions, not observed company financials",
+    "source": "User-requested EBITDA-to-revenue search expansion; no licensed industry benchmark dataset supplied",
+    "rule": "Broad search-only margin bands. Never use to assert a company meets financial criteria or calculate an investment score."
+  },
+  "default": {"minimum_margin": 0.05, "maximum_margin": 0.30},
+  "Commercial Cleaning": {"minimum_margin": 0.05, "maximum_margin": 0.25},
+  "HVAC": {"minimum_margin": 0.05, "maximum_margin": 0.25},
+  "Manufacturing": {"minimum_margin": 0.05, "maximum_margin": 0.30},
+  "IT Services": {"minimum_margin": 0.05, "maximum_margin": 0.35},
+  "Software": {"minimum_margin": 0.05, "maximum_margin": 0.40}
+}
