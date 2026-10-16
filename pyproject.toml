@@ -1,0 +1,15 @@
+[project]
+name = "acquisition-sourcing-agent"
+version = "0.1.0"
+description = "Two-stage acquisition discovery and evidence-based investment evaluation"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1", "uvicorn[standard]>=0.34,<1", "sqlalchemy>=2.0,<3",
+  "psycopg[binary]>=3.2,<4", "pydantic>=2.10,<3", "httpx>=0.28,<1",
+  "jinja2>=3.1,<4", "python-multipart>=0.0.20,<1", "openpyxl>=3.1,<4",
+  "pypdf>=5,<7", "cryptography>=44,<47"
+]
+[dependency-groups]
+dev = ["pytest>=8,<10", "pytest-cov>=6,<8"]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
