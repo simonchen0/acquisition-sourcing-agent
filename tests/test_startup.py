@@ -58,3 +58,45 @@ def test_process_helper_is_portable_and_rejects_unrelated_pid():
     for name in ['dev-start.sh','dev-stop.sh','process-helpers.sh']:
         text=(config.ROOT/'scripts'/name).read_text()
         assert 'readlink ' not in text and '| rg ' not in text and '/proc/' not in text.replace('# Shared POSIX process checks for Linux and macOS; no /proc or ripgrep dependency.','')
+
+
+def test_health_and_bootstrap_expose_matching_api_contract(client,monkeypatch):
+    monkeypatch.setenv('APP_INSTANCE_ID','test-startup-instance')
+    health=client.get('/health').json()
+    assert health['api_version']==2 and health['instance_id']=='test-startup-instance'
+    assert client.get('/api/bootstrap').json()['api_version']==health['api_version']
+
+
+def test_start_script_does_not_claim_success_for_an_old_listener(tmp_path):
+    import http.server
+    import socketserver
+    import threading
+    class OldHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200);self.end_headers();self.wfile.write(b'{"status":"ok","database":"connected"}')
+        def log_message(self,*args):pass
+    with socketserver.TCPServer(('127.0.0.1',0),OldHandler) as server:
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        port=server.server_address[1]
+        env=cli_env(tmp_path);env['DEV_PORT']=str(port)
+        result=subprocess.run(['bash',str(config.ROOT/'scripts/dev-start.sh')],cwd=config.ROOT,env=env,capture_output=True,text=True,timeout=15)
+        assert result.returncode!=0
+        assert 'already in use' in result.stdout and 'no new server was started' in result.stdout
+        assert 'Development service started.' not in result.stdout
+        assert not list(tmp_path.glob('web*.pid'))
+        server.shutdown()
+
+
+def test_health_handshake_rejects_another_instance(tmp_path):
+    import http.server
+    import socketserver
+    import threading
+    class OtherHandler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200);self.end_headers();self.wfile.write(b'{"status":"ok","api_version":2,"instance_id":"other-instance"}')
+        def log_message(self,*args):pass
+    with socketserver.TCPServer(('127.0.0.1',0),OtherHandler) as server:
+        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
+        command=f'project_root="{config.ROOT}"; source "{config.ROOT}/scripts/process-helpers.sh"; server_matches {server.server_address[1]} expected-instance'
+        assert subprocess.run(['bash','-c',command],capture_output=True).returncode!=0
+        server.shutdown()

@@ -78,9 +78,16 @@ Accounts are administrator-provisioned with PBKDF2 password hashes, hashed sessi
 uv sync --frozen
 .venv/bin/pytest -q
 node --check app/static/app.js
+node --test tests/test_frontend.cjs
 .venv/bin/python scripts/package.py
 ```
 
 Tests ignore the application's database and paid credentials, using disposable SQLite by default. PostgreSQL tests require `TEST_DATABASE_URL` naming an isolated `_test` or `_tests` database and recreate its tables. Fixtures under `tests/fixtures/apollo_*.json` are synthetic, not recorded provider responses.
 
 `dist/` is ignored and no longer tracked. The packaging command creates a source-only ZIP locally, excluding credentials, uploads, environments, and Git metadata. See [costs](docs/costs.md), [provider setup](docs/providers.md), and [deployment](docs/deployment.md). Public hosting and live provider validation require external credentials; they are not claimed complete.
+
+## Restarting after an update
+
+Stop/start the service after pulling code or changing `.env`. The launcher now verifies the exact server instance and frontend API version; an older healthy process on the same port is not accepted as a successful restart. macOS process checks use untruncated `ps -ww` output and can verify older relative launches via `lsof` working-directory evidence.
+
+If a port is occupied by a process that cannot be safely identified, stop it from its original terminal or use `DEV_PORT=8001 scripts/dev-start.sh` and open the app on port 8001. Alternate ports have separate PID/instance records; stop that instance with `DEV_PORT=8001 scripts/dev-stop.sh`. The UI displays a restart message when current JavaScript receives an old server response, rather than crashing or enabling an outdated paid-search action. No API keys are displayed during these checks.

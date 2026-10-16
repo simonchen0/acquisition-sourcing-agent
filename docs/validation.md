@@ -1,3 +1,13 @@
+# Frontend / stale-server repair validation
+
+The subsequent repair passed **79 Python tests on SQLite**, **4 Node frontend regression tests**, and real Chromium regression checks. PostgreSQL's 76-case pipeline run below predates this repair; it was not repeated for the frontend/process-lifecycle changes.
+
+Reproduced an original legacy estimate without `setup_errors` and verified that the current frontend rejects its outdated shape instead of throwing on `.join()`. Missing diagnostic lists receive a readable fallback with paid sourcing disabled. Partial saved criteria receive defaults, and mixed frontend/backend versions show a restart message before the search form loads. The review dialog preserves the $10 default.
+
+The restart helper now verifies a per-launch instance identifier/API version, rejects an already occupied port before spawning another server, uses untruncated portable process checks, and keeps separate PID records for alternate ports. Tests confirmed it cannot treat an old `/health` response or another instance's identifier as successful startup. Actual start/repeated-start and browser behavior were exercised on Linux; native macOS remains unverified. No paid provider calls or user credentials were involved.
+
+---
+
 # Validation — Apollo pipeline upgrade
 
 Run in the Linux Codex cloud environment on October 16, 2026. All 45 original tests remain intact and passing, with 31 additional test cases for the upgrade. No paid provider request was made.

@@ -1,4 +1,5 @@
 import csv
+import os
 import hashlib
 import io
 import json
@@ -87,7 +88,7 @@ def favicon(): return Response(status_code=204)
 
 @app.get('/health')
 def health(db:DBSession=Depends(session_db)):
-    db.execute(select(1)); return {'status':'ok','database':'connected','worker_mode':'embedded' if config.EMBEDDED_WORKER else 'external','embedded_worker_alive':any(t.name=='sourcing-worker' and t.is_alive() for t in __import__('threading').enumerate())}
+    db.execute(select(1)); return {'status':'ok','database':'connected','api_version':2,'instance_id':os.getenv('APP_INSTANCE_ID'),'worker_mode':'embedded' if config.EMBEDDED_WORKER else 'external','embedded_worker_alive':any(t.name=='sourcing-worker' and t.is_alive() for t in __import__('threading').enumerate())}
 
 @app.get('/login',response_class=HTMLResponse)
 def login_page(request:Request):
@@ -135,7 +136,7 @@ def page(request:Request):
 
 @app.get('/api/bootstrap')
 def bootstrap(request:Request,db:DBSession=Depends(session_db)):
-    return {'characteristics':CHARACTERISTICS,'frameworks':FRAMEWORKS,'criteria':[{'id':c.id,'name':c.name,'data':c.data} for c in db.scalars(select(CriteriaRecord).where(CriteriaRecord.user_id==uid(request)))],
+    return {'api_version':2,'characteristics':CHARACTERISTICS,'frameworks':FRAMEWORKS,'criteria':[{'id':c.id,'name':c.name,'data':c.data} for c in db.scalars(select(CriteriaRecord).where(CriteriaRecord.user_id==uid(request)))],
             'settings':request.state.user.settings,'defaults':{'search_budget':config.DEFAULT_SEARCH_BUDGET,'monthly_budget':config.DEFAULT_MONTHLY_BUDGET},'providers':{'apollo':{'configured':bool(config.APOLLO_KEY),'storage_confirmed':config.APOLLO_STORAGE_RIGHTS,'pricing_configured':config.APOLLO_CREDIT_COST>0,'export_allowed':config.APOLLO_EXPORT_RIGHTS},'brave':bool(config.BRAVE_KEY) and config.BRAVE_STORAGE_RIGHTS,'openai':bool(config.AI_KEY)},
             'pricing':{'brave_request':config.BRAVE_REQUEST_COST,'ai_input_million':config.AI_INPUT_COST,'ai_output_million':config.AI_OUTPUT_COST,'model':config.AI_MODEL,'apollo_credit':config.APOLLO_CREDIT_COST,'apollo_reveal_credits':config.APOLLO_REVEAL_CREDITS},
             'month_spend':request.state.user.spend if request.state.user.month==month() else 0}
