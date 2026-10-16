@@ -1,32 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
-project_root="$(cd "$(dirname "$0")/.." && pwd -P)"
+project_root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$project_root"
-source "$project_root/scripts/process-helpers.sh"
-task_data_dir="${DATA_DIR:-$("$project_root/.venv/bin/python" -c 'from app.config import DATA; print(DATA)')}"
-web_component=web
-[ "${DEV_PORT:-8000}" = 8000 ] || web_component="web-${DEV_PORT}"
-components=("$web_component")
-[ "${DEV_PORT:-8000}" != 8000 ] || components+=(worker)
-for component in "${components[@]}"; do
+task_data_dir="${DATA_DIR:-$project_root/.data}"
+proc_cwd() {
+    if [ -e "/proc/$1/cwd" ]; then readlink "/proc/$1/cwd"
+    else lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'; fi
+}
+proc_cmdline() {
+    if [ -r "/proc/$1/cmdline" ]; then tr '\0' ' ' < "/proc/$1/cmdline"
+    else ps -p "$1" -o command= 2>/dev/null; fi
+}
+for component in web worker; do
     file="$task_data_dir/$component.pid"
     [ -f "$file" ] || continue
     task_pid="$(cat "$file")"
+    [[ "$task_pid" =~ ^[0-9]+$ ]] || continue
+    [ "$(proc_cwd "$task_pid" || true)" = "$project_root" ] || continue
     expected='app.main:app'; [ "$component" = 'worker' ] && expected='app.worker'
-    if process_matches "$task_pid" "$expected" "$project_root"; then
-        kill -TERM "$task_pid"
-        for attempt in {1..20}; do
-            kill -0 "$task_pid" 2>/dev/null || break
-            sleep 0.25
-        done
-        if process_matches "$task_pid" "$expected" "$project_root"; then
-            echo "$component is still shutting down. Its PID file was kept; wait and rerun this command."
-            exit 1
-        fi
-        rm -f "$file"
-        [ "$component" = 'worker' ] || rm -f "$task_data_dir/$component.instance"
-    else
-        echo "Skipped $component: PID does not match this checkout; no unrelated process stopped."
-    fi
+    if proc_cmdline "$task_pid" | grep -q "$expected"; then kill -TERM "$task_pid"; fi
+    rm -f "$file"
 done
-echo 'Development stop check complete.'
+echo 'Stopped only development processes identified by this checkout.'

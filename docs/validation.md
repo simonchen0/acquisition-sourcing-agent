@@ -1,4 +1,31 @@
-# Frontend / stale-server repair validation
+# Matthew branch preference and browser E2E — October 16, 2026
+
+Fetched all origin branches. Matthew's latest branch is `plan/apollo-brave-sourcing` at `0454052`; its history was already merged at `dad0860`, but that merge retained our overlapping launcher changes. At the user's request, `scripts/dev-start.sh` and `scripts/dev-stop.sh` now exactly match Matthew's branch. Other application changes remain present. The results below supersede historical launcher claims farther down this document.
+
+Launched the real FastAPI server and external worker using Matthew's script on an isolated SQLite test database in the Linux cloud workspace. A Chromium/Playwright browser run passed these checks against the actual application, without HTTP response interception:
+
+1. Sign in and load bootstrap.
+2. Complete all six questionnaire steps, review the estimate, verify the $10 default and unavailable-provider guard, and save criteria.
+3. Import a synthetic, explicitly exportable company CSV through the UI.
+4. Open its results list and company profile.
+5. Create its evaluation workspace, upload a synthetic document, and preview locally extracted text.
+6. Save notes and reviewed financial figures; verify persistence after reload and disabled AI evaluation without credentials.
+7. Download a CSV containing the imported company.
+8. Save account settings and verify persistence after reload.
+9. Verify uploads did not start an evaluation and provider usage remains empty.
+10. Log out.
+11. Observe zero uncaught JavaScript errors, including no `.join()` crash.
+
+Automated results: **77 Python tests passed, 2 failed; 4 Node frontend tests passed**. The Python failures remain visible, with no assertions removed:
+
+- `test_process_helper_is_portable_and_rejects_unrelated_pid`: a source-level assertion rejects `/proc`/`readlink` usage. Matthew's implementation intentionally uses `/proc` on Linux and an `lsof`/`ps` fallback on macOS, so this particular assertion conflicts with his implementation; it does not prove the macOS fallback fails.
+- `test_start_script_does_not_claim_success_for_an_old_listener`: a behavioral regression. The launcher returned success when an old server occupied the port. The real stop/restart exercise also left the old listener running in this sandbox, followed by a failed bind despite the success message. Identified test processes were terminated explicitly before the final successful browser run. His stop/start scripts have not been changed to conceal this result.
+
+Live Apollo/Brave/OpenAI requests, full automated sourcing, AI-generated evaluation reports, and native macOS startup were **not validated** in this run. No paid provider credentials or user `.env` contents were used. Passing local browser checks must not be interpreted as passing those integrations or the failing launcher regression.
+
+---
+
+# Frontend / stale-server repair validation (historical, before Matthew script restoration)
 
 The subsequent repair passed **79 Python tests on SQLite**, **4 Node frontend regression tests**, and real Chromium regression checks. PostgreSQL's 76-case pipeline run below predates this repair; it was not repeated for the frontend/process-lifecycle changes.
 
